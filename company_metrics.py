@@ -24,7 +24,10 @@ from __future__ import annotations
 
 import sys
 from typing import Tuple, List
-
+import tkinter as tk
+from tkinter import filedialog
+import glob
+import os
 import numpy as np
 import pandas as pd
 
@@ -239,38 +242,49 @@ def enrich_dataframe(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
 
 # ────────────────────────── CLI entry point ──────────────────────────
 def _cli() -> None:
+    # Prompt user to select a folder
+    root = tk.Tk()
+    root.withdraw()
+    folder_selected = filedialog.askdirectory(title="Select folder containing input Excel/CSV files")
     
-    inp, out = sys.argv[1:3]
-    df_in = pd.read_csv(inp) if inp.lower().endswith(".csv") else pd.read_excel(inp)
+    if not folder_selected:
+        print("❌ No folder selected. Aborting.")
+        return
 
-    enriched, bench = enrich_dataframe(df_in)
+    # Process each file in the folder
+    files = glob.glob(os.path.join(folder_selected, "*.xlsx")) + glob.glob(os.path.join(folder_selected, "*.csv"))
+    if not files:
+        print("❌ No .xlsx or .csv files found in selected folder.")
+        return
 
-    # ---------- split into Raw Data & Calculations ----------
-    calc_cols_key = ["Month", "PAN", "Supplier Name"]
-    derived_cols  = [
-        "Cash-Rich Status",
-        "Indicative Interest Rate (%)",
-        "Dependency %",
-        "Dependency Slab",
-    ] + [c for c in enriched.columns if "Deviation %" in c or "Performance" in c]
+    for file_path in files:
+        try:
+            df_in = pd.read_csv(file_path) if file_path.lower().endswith(".csv") else pd.read_excel(file_path)
+            enriched, bench = enrich_dataframe(df_in)
 
-    calc_cols = [c for c in calc_cols_key + derived_cols if c in enriched.columns]
-    df_calc = (
-        enriched[calc_cols]
-        .drop_duplicates(subset=calc_cols_key)
-        .sort_values(calc_cols_key)
-    )
+            # Output file name
+            out_path = os.path.splitext(file_path)[0] + "_enriched.xlsx"
 
-    # df_raw = df_in.copy()  # original user data
+            # Save Calculations + Benchmark
+            calc_cols_key = ["Month", "PAN", "Supplier Name"]
+            derived_cols = [
+                "Cash-Rich Status",
+                "Indicative Interest Rate (%)",
+                "Dependency %",
+                "Dependency Slab",
+            ] + [c for c in enriched.columns if "Deviation %" in c or "Performance" in c]
 
-    # ---------- write Excel ----------
-    with pd.ExcelWriter(out, engine="openpyxl") as w:
-        # df_raw.to_excel(w,   sheet_name="Raw Data",           index=False)
-        df_calc.to_excel(w,  sheet_name="Calculations",       index=False)
-        bench.to_excel(w,    sheet_name="Industry Benchmarks", index=False)
+            calc_cols = [c for c in calc_cols_key + derived_cols if c in enriched.columns]
+            df_calc = (
+                enriched[calc_cols]
+                .drop_duplicates(subset=calc_cols_key)
+                .sort_values(calc_cols_key)
+            )
 
-    print(f"✅  Saved Raw Data, Calculations & Benchmarks → {out}")
+            with pd.ExcelWriter(out_path, engine="openpyxl") as w:
+                df_calc.to_excel(w, sheet_name="Calculations", index=False)
+                bench.to_excel(w, sheet_name="Industry Benchmarks", index=False)
 
-
-if __name__ == "__main__":
-    _cli()
+            print(f"✅ Processed: {os.path.basename(file_path)} → {os.path.basename(out_path)}")
+        except Exception as e:
+            print(f"❌ Failed to process {file_path}: {e}")

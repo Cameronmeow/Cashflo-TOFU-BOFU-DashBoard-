@@ -16,3 +16,6 @@ pandas.tseries.offsets
 dateutil.relativedelta
 sqlalchemy
 textwrap
+tkinter
+dotenv
+glob
