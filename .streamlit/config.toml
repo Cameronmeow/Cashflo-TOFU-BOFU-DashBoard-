@@ -1,0 +1,10 @@
+[theme]
+primaryColor = "#EC8305"
+backgroundColor = "#DBD3D3"
+secondaryBackgroundColor = "#EC8305"
+textColor = "#024CAA"
+font = "sans serif"
+
+[server]
+runOnSave = true
+port = 8501
