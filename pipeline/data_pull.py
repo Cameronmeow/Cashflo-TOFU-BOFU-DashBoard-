@@ -3,14 +3,20 @@ import os, pandas as pd
 from datetime import datetime, timedelta
 from sqlalchemy import create_engine
 from textwrap import dedent
-
+from dotenv import load_dotenv  
+load_dotenv()  
 def run(months_back: int = 6, out_dir="Output",date_type: str = 'i."createdAt"' ) -> str:
     """Return the path to the freshly-written Excel file."""
     # DB creds from env ­­­(set them once in your shell or .env)
-    PG_USER = os.getenv("PG_USER", "debashish_das")
-    PG_PASSWORD = os.getenv("PG_PASSWORD", "kmvwirnwrfw3419fd")
-    PG_HOST = os.getenv("PG_HOST", "pg-main-replica.aps1.prod.cashflo.dev")
-    PG_DB   = os.getenv("PG_DB", "cashflo")
+    # PG_USER = os.getenv("PG_USER", "debashish_das")
+    PG_USER = os.getenv("PG_USER")
+    # PG_PASSWORD = os.getenv("PG_PASSWORD", "kmvwirnwrfw3419fd")
+    PG_PASSWORD = os.getenv("PG_PASSWORD")
+    # PG_HOST = os.getenv("PG_HOST", "pg-main-replica.aps1.prod.cashflo.dev")
+    PG_HOST = os.getenv("PG_HOST")
+    # PG_DB = os.getenv("PG_DB", "cashflo")
+    PG_DB = os.getenv("PG_DB")
+
 
     cutoff = (datetime.now() - timedelta(days=30*months_back)).date().isoformat()
     engine = create_engine(
