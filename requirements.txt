@@ -8,7 +8,6 @@ openpyxl
 numpy
 typing
 sys
-__future__
 functools
 pathlib
 dateutil.relativedelta
