@@ -33,13 +33,9 @@ def run_invoice_pull(
     Returns the DataFrame and writes an Excel file in <out_dir>.
     """
     # 1 ── DB creds (pick up from env or hard-code while testing)
-    # PG_USER = os.getenv("PG_USER", "debashish_das")
     PG_USER = os.getenv("PG_USER")
-    # PG_PASSWORD = os.getenv("PG_PASSWORD", "kmvwirnwrfw3419fd")
     PG_PASSWORD = os.getenv("PG_PASSWORD")
-    # PG_HOST = os.getenv("PG_HOST", "pg-main-replica.aps1.prod.cashflo.dev")
     PG_HOST = os.getenv("PG_HOST")
-    # PG_DB = os.getenv("PG_DB", "cashflo")
     PG_DB = os.getenv("PG_DB")
 
     engine = create_engine(

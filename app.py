@@ -1,15 +1,66 @@
 import streamlit as st
 import pipeline.data_pull as pull
+import pipeline.data_pull_new as pull_new
 import pipeline.calc_all as calc
 import shutil
 import os
 import merge_tool
+import hubspot_clean as contact_dedup_tool
 import company_metrics as cm
 import dashboard_page as dash 
+import dashboard_page_new as dash_new_v2
 from io import BytesIO
 import pandas as pd
 import pipeline.invoice_data_pull as inv
 import datetime
+from company_metrics import _cli  # or expose a save helper instead
+from io import BytesIO
+from openpyxl.styles import PatternFill
+from openpyxl.utils.dataframe import dataframe_to_rows
+from openpyxl.workbook import Workbook
+
+def excel_with_colours(enriched_df: pd.DataFrame, bench_df: pd.DataFrame) -> BytesIO:
+    """
+    Return an in-memory XLSX where every '… Deviation %' cell is coloured:
+    ≤20 → green, 20–50 → yellow, >50 → red.
+    """
+    wb = Workbook()
+    wb.remove(wb.active)            # kill default blank sheet
+
+    # Benchmarks sheet
+    ws_bench = wb.create_sheet("Industry Benchmarks")
+    for row in dataframe_to_rows(bench_df, index=False, header=True):
+        ws_bench.append(row)
+
+    # Calculations sheet
+    ws_calc = wb.create_sheet("Calculations")
+    for row in dataframe_to_rows(enriched_df, index=False, header=True):
+        ws_calc.append(row)
+
+    # pastel fills
+    fill_good = PatternFill("solid", fgColor="C6EFCE")   # green
+    fill_avg  = PatternFill("solid", fgColor="FFEB9C")   # yellow
+    fill_bad  = PatternFill("solid", fgColor="F2DCDB")   # red
+
+    # colour every Deviation % column
+    for col_idx, header_cell in enumerate(ws_calc[1], 1):
+        if "Deviation %" in str(header_cell.value):
+            for row_idx in range(2, ws_calc.max_row + 1):
+                cell = ws_calc.cell(row=row_idx, column=col_idx)
+                try:
+                    val = float(cell.value)
+                except (TypeError, ValueError):
+                    continue
+                cell.fill = (
+                    fill_good if val <= 20
+                    else fill_avg if val <= 50
+                    else fill_bad
+                )
+
+    buf = BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf
 # import new_logic
 # ─────────────────────────────────────────────
 # 🌟 Page Setup
@@ -21,13 +72,20 @@ st.set_page_config(page_title="CashFlo TOFU/BOFU Dashboard", layout="wide")
 # ─────────────────────────────────────────────
 st.sidebar.image("logo.webp", width=100)
 st.sidebar.title("🔀 Navigation")
-nav_choice = st.sidebar.radio("Go to", ["📊 Dashboard", "🧩 Merge Tool", "📈 Enrichment Tool", '📁 Invoice Data Pull','Test'])
+nav_choice = st.sidebar.radio("Go to", ["📊 TOFU BOFU Vendor Data + Cat with Revenue","📊 Vendor Category and Summary","🧹 Contact Dedup Tool","Hubspot Data CleanUp","🧩 Merge Tool", "📈 Enrichment Tool", '📁 Invoice Data Pull'])
 
 # ─────────────────────────────────────────────
 # 📊 Dashboard Logic
-# ─────────────────────────────────────────────
-if nav_choice == "📊 Dashboard":
+# ────────────────────────────────────────  ─────
+if nav_choice == "📊 TOFU BOFU Vendor Data + Cat with Revenue":
     dash.render(pull_module=pull, calc_module=calc, logo_path="logo.webp")
+elif nav_choice == "📊 Vendor Category and Summary":
+    dash_new_v2.render(pull_module=pull_new, calc_module=calc, logo_path="logo.webp")
+
+# … inside your nav logic:
+elif nav_choice == "🧹 Contact Dedup Tool":
+    st.title("🧹 Contact Dedup Tool")
+    contact_dedup_tool.render_page()
 # ─────────────────────────────────────────────
 # 🧩 Merge Tool Logic
 # ─────────────────────────────────────────────
@@ -54,37 +112,22 @@ elif nav_choice == "📈 Enrichment Tool":
             enriched_df, bench_df = cm.enrich_dataframe(df)
             st.success("✅ Enrichment completed!")
 
-            # st.markdown("### 🧾 Enriched Sample Data")
-            # st.dataframe(enriched_df.head(10))
-
-            # st.markdown("### 🧮 Industry Benchmark Table")
-            # st.dataframe(bench_df)
-
-            # Prepare for download
-            output = BytesIO()
-            with pd.ExcelWriter(output, engine="openpyxl") as writer:
-                enriched_df.to_excel(writer, sheet_name="Enriched Data", index=False)
-                bench_df.to_excel(writer, sheet_name="Industry Benchmarks", index=False)
-            output.seek(0)
-
-            # st.download_button(
-            #     label="⬇️ Download Enriched Excel",
-            #     data=output,
-            #     file_name="enriched_output.xlsx",
-            #     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            # )
+                # … after enrichment finishes
+            
             buf = BytesIO()
             with pd.ExcelWriter(buf, engine="openpyxl") as w:
                 enriched_df.to_excel(w, sheet_name="Enriched Data", index=False)
                 bench_df.to_excel(w, sheet_name="Industry Benchmarks", index=False)
             buf.seek(0)
+            buf = excel_with_colours(enriched_df, bench_df)
 
             st.download_button(
-                "⬇️ Download Enriched + Benchmark Excel",
+                "⬇️ Download Enriched + Benchmark (coloured)",
                 data=buf,
                 file_name="enriched_with_benchmarks.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
+            
         except Exception as e:
             st.error(f"❌ Error processing file: {e}")
 

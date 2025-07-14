@@ -4,6 +4,7 @@ from datetime import datetime
 from dateutil.relativedelta import relativedelta
 import pandas as pd
 from functools import reduce
+from pandas.tseries.offsets import DateOffset
 
 # ──────────────────────────────────────────────────────────────────────────
 # 1. Locate the latest Excel inside ./Output
@@ -51,10 +52,16 @@ def build_quarter_metrics(path: str):
         piv = (
             df.pivot_table(index=["PAN", "Supplier Name", "Buyer Name"],
                         columns="FYQ", values=m, aggfunc="sum")
-            .sort_index(axis=1)                 # FYQ chronological
-            .add_prefix(f"{m}__")               # keep metric in col name
-            .reset_index()
+            .sort_index(axis=1)
         )
+
+        # Rename columns using strftime (assuming FYQ is a datetime column)
+        # Make the pivot-column label usable in Excel:
+        # e.g.  "FY25 Q1"  →  "FY25_Q1"
+        piv.columns = [f"{m}__{str(col).replace(' ', '_')}" for col in piv.columns]
+
+
+        piv = piv.reset_index()
         pivots.append(piv)
 
     # Combine all pivots
@@ -103,30 +110,68 @@ def build_quarter_metrics(path: str):
     # ──────────────────────────────────────────────────────────────────────────
     # 6. Dynamic categorisation using latest FYQ
     # ──────────────────────────────────────────────────────────────────────────
-    def tofu_cat(first_qtr, cnt, threshold_hi, threshold_mid):
+    def tofu_cat(first_qtr, cnt, hi, mid):
+        """
+        Pure TOFU-side tag: Regular / Medium / Low / New.
+        (No churn logic here – churn is driven by BOFU behaviour.)
+        """
         if pd.isna(first_qtr):
             return "TOFU Low"
         if first_qtr == latest_fyq:
             return "TOFU New"
-        if cnt >= threshold_hi:
+        if cnt >= hi:
             return "TOFU Regular"
-        if cnt >= threshold_mid:
+        if cnt >= mid:
             return "TOFU Medium"
         return "TOFU Low"
+    # Helper to know “last three TOFU months”
+    last_three_tofu = (
+        df[df["TOFU (in lacs)"] > 0]
+        .groupby(["PAN", "Supplier Name"])["Month"]
+        .nlargest(3)
+        .reset_index(level=2, drop=True)
+    )
 
-    def bofu_cat(first_qtr, acc, hi=0.8, mid=0.5):
+    def bofu_cat(first_qtr, acc,
+                last_bofu_qtr,
+                n_tofu_instances,
+                last_three_tofu_months):
+
+        # 0) Never transacted
         if pd.isna(first_qtr):
-            return "Never Transacted"
+            # Distinguish new-TOFU vs old-TOFU
+            if n_tofu_instances and last_three_tofu_months.max() >= last_month - DateOffset(months=8):
+                return "Not Txn – New TOFU"
+            else:
+                return "Not Txn – Old TOFU"
+
+        # 1) BOFU happened in latest FYQ ⇒ New
         if first_qtr == latest_fyq:
             return "Txn New"
-        if acc >= hi:
+
+        # 2) Normal tiers
+        if acc >= 0.8:
             return "Txn High"
-        if acc >= mid:
+        if acc >= 0.5:
             return "Txn Med"
         if acc > 0:
-            return "Txn Low"
-        return "Never Transacted"
+            # --- churn / at-risk logic -------------
+            # No BOFU in the last 3 TOFU instances
+            if last_bofu_qtr is not None:
+                months_since_last_bofu = (last_month - last_bofu_qtr).days / 30
+                if months_since_last_bofu > 12:
+                    return "Churned >1 yr"
+                else:
+                    return "Churned <1 yr"
 
+            # If last two TOFU arrivals had zero BOFU
+            if n_tofu_instances >= 2 and acc == 0:
+                return "At-risk of Churn"
+
+            return "Txn Low"
+
+        # No revenue share at all
+        return "Not Txn"
 
     merged["TOFU Category_18M"] = merged.apply(
         lambda r: tofu_cat(r["First TOFU (in lacs) Quarter"], r.get("TOFU (in lacs) count 18 month", 0), 13, 7), axis=1)

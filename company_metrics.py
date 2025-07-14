@@ -7,33 +7,35 @@ Enrich vendor data with:
   • Deviation vs. industry working-capital benchmarks
   • Industry / Nature-of-Business benchmark table
 
-Return two DataFrames (enriched, benchmark) for Streamlit
-and still offers a CLI to save three Excel sheets.
+Returns two DataFrames (enriched, benchmark) for Streamlit
+and still offers a CLI that saves a coloured Excel workbook
+(“Calculations” + “Industry Benchmarks”).
 
-Usage inside Streamlit
-----------------------
+Usage in Streamlit
+------------------
     import company_metrics as cm
     enriched_df, bench_df = cm.enrich_dataframe(df)
 
 CLI
 ---
-    python company_metrics.py  <input.xlsx|csv>  <output.xlsx>
+    python company_metrics.py          # prompts for folder of XLSX/CSV files
 """
 
 from __future__ import annotations
 
-import sys
-from typing import Tuple, List
-import tkinter as tk
-from tkinter import filedialog
 import glob
 import os
+import tkinter as tk
+from tkinter import filedialog
+from typing import List, Tuple
+
 import numpy as np
 import pandas as pd
+from openpyxl.styles import PatternFill
+from openpyxl.utils.dataframe import dataframe_to_rows
 
 # ────────────────────────── helpers ──────────────────────────
 def _to_num(s: pd.Series) -> pd.Series:
-    """Coerce to numeric, non-parsable values → NaN."""
     return pd.to_numeric(s, errors="coerce")
 
 
@@ -55,11 +57,6 @@ def _safe_series(
 
 
 def _parse_slab(txt: str | float) -> float:
-    """
-    Turn:
-      • “Rs 250 Cr to 500 Cr” → 375
-      • “Rs 2000 Cr and above” → 2000
-    """
     if pd.isna(txt):
         return np.nan
     if isinstance(txt, (int, float)):
@@ -82,28 +79,18 @@ def _parse_slab(txt: str | float) -> float:
 
 
 def _fy_label(ts: pd.Timestamp) -> str:
-    """FY label (Apr-Mar)."""
     yr = ts.year + 1 if ts.month >= 4 else ts.year
     return f"FY{str(yr)[-2:]}"
 
 
-def _categorize(dev: float) -> str | float:
-    if pd.isna(dev):
-        return np.nan
-    if dev <= 20:
-        return "Good"
-    if dev <= 50:
-        return "Average"
-    return "Bad"
-
 # ────────────────────────── main enricher ──────────────────────────
 def enrich_dataframe(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    df = df.copy()  # do not mutate caller’s frame
+    df = df.copy()  # keep caller’s df intact
 
     # ---------- Cash-Rich Status ----------
-    cash_eq  = _safe_series(df, "Cash and Cash Equivalents", 0)
-    invest   = _safe_series(df, "Current investments", 0)
-    st_borr  = _safe_series(df, "Short term borrowings").replace(0, np.nan)
+    cash_eq = _safe_series(df, "Cash and Cash Equivalents", 0)
+    invest = _safe_series(df, "Current investments", 0)
+    st_borr = _safe_series(df, "Short term borrowings").replace(0, np.nan)
     rev_grow = _safe_series(df, "Revenue growth in %", 0)
 
     rating_col = next(
@@ -119,8 +106,8 @@ def enrich_dataframe(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
 
     # ---------- Indicative Interest Rate ----------
     fin_cost_pct = _safe_series(df, "Finance Cost (% of Sales)") / 100
-    turnover     = _safe_series(df, "Annual Revenue")
-    total_debt   = (
+    turnover = _safe_series(df, "Annual Revenue")
+    total_debt = (
         _safe_series(df, "Short term borrowings", 0)
         + _safe_series(df, "Long term borrowings", 0)
     )
@@ -135,36 +122,25 @@ def enrich_dataframe(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
 
     # ---------- Dependency % / Slab ----------
     month_col = _get_col(df, "Month")
-    tofu_col  = _get_col(df, "TOFU (in lacs)")
-    month_ts  = pd.to_datetime(df[month_col], errors="coerce")
-    df["FY"]  = month_ts.map(_fy_label)
-
+    tofu_col = _get_col(df, "TOFU (in lacs)")
+    month_ts = pd.to_datetime(df[month_col], errors="coerce")
+    df["FY"] = month_ts.map(_fy_label)
     supplier_key = _get_col(df, "PAN")
 
     def _extrap(series: pd.Series) -> float:
-        """Scale YTD TOFU to a full FY figure for dependence calc."""
         if series.count() == 0:
             return np.nan
         first_month = month_ts.loc[series.index].dt.month.min()
-        # months remaining to March for the same FY
-        months_rem = (
-            3 - (first_month - 4)  # when FY starts in April
-            if first_month >= 4
-            else 3 + (4 - first_month)
-        )
+        months_rem = 3 - (first_month - 4) if first_month >= 4 else 3 + (4 - first_month)
         return series.sum() + series.mean() * months_rem
 
     tofu_fy = (
-        df.groupby([supplier_key, "FY"])[tofu_col]
-        .apply(_extrap)
-        .unstack("FY")
+        df.groupby([supplier_key, "FY"])[tofu_col].apply(_extrap).unstack("FY")
     )
 
-    # Revenue – take first non-null entry per supplier
     revenue_series = _safe_series(df, "Annual Revenue", np.nan)
     if revenue_series.isna().all():
         revenue_series = df[_get_col(df, "Turnover range")].map(_parse_slab)
-
     revenue_sup = revenue_series.groupby(df[supplier_key]).first()
 
     if not tofu_fy.empty:
@@ -179,7 +155,7 @@ def enrich_dataframe(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
         )
         df = df.merge(dep_df, left_on=supplier_key, right_index=True, how="left")
     else:
-        df["Dependency %"]   = np.nan
+        df["Dependency %"] = np.nan
         df["Dependency Slab"] = np.nan
 
     # ---------- Industry Benchmarks ----------
@@ -201,78 +177,74 @@ def enrich_dataframe(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
     ]
 
     if avail_metrics:
-        # ensure numeric
         for m in avail_metrics:
             df[_get_col(df, m)] = _to_num(df[_get_col(df, m)])
 
         bench_df = (
-            df[[bench_key] + [ _get_col(df, m) for m in avail_metrics ]]
+            df[[bench_key] + [_get_col(df, m) for m in avail_metrics]]
             .groupby(bench_key)
             .mean(numeric_only=True)
             .reset_index()
             .rename(
-                columns={ _get_col(df, k): v for k, v in wc_metrics.items() if k in avail_metrics }
+                columns={_get_col(df, k): v for k, v in wc_metrics.items() if k in avail_metrics}
             )
         )
     else:
         bench_df = pd.DataFrame(columns=[bench_key])
 
-    # ---------- Deviation & Performance ----------
+    # ---------- Deviation % ----------
     if not bench_df.empty:
         df = df.merge(bench_df, on=bench_key, how="left")
         for metric, avg_col in wc_metrics.items():
             if metric.lower() not in df.columns.str.lower():
                 continue
-
-            mcol  = _get_col(df, metric)
-            acol  = avg_col  # already the new averaged column
+            mcol = _get_col(df, metric)
+            acol = avg_col
             df[mcol] = _to_num(df[mcol])
             df[acol] = _to_num(df[acol])
-
-            dev_col  = f"{metric} Deviation %"
-            perf_col = f"{metric} Performance"
-
+            dev_col = f"{metric} Deviation %"
             with np.errstate(divide="ignore", invalid="ignore"):
                 df[dev_col] = ((df[mcol] - df[acol]).abs() / df[acol]) * 100
-
-            df[perf_col] = df[dev_col].apply(_categorize)
 
     return df, bench_df
 
 
 # ────────────────────────── CLI entry point ──────────────────────────
 def _cli() -> None:
-    # Prompt user to select a folder
     root = tk.Tk()
     root.withdraw()
-    folder_selected = filedialog.askdirectory(title="Select folder containing input Excel/CSV files")
-    
+    folder_selected = filedialog.askdirectory(
+        title="Select folder containing input Excel/CSV files"
+    )
     if not folder_selected:
         print("❌ No folder selected. Aborting.")
         return
 
-    # Process each file in the folder
-    files = glob.glob(os.path.join(folder_selected, "*.xlsx")) + glob.glob(os.path.join(folder_selected, "*.csv"))
+    files = glob.glob(os.path.join(folder_selected, "*.xlsx")) + glob.glob(
+        os.path.join(folder_selected, "*.csv")
+    )
     if not files:
         print("❌ No .xlsx or .csv files found in selected folder.")
         return
 
     for file_path in files:
         try:
-            df_in = pd.read_csv(file_path) if file_path.lower().endswith(".csv") else pd.read_excel(file_path)
+            df_in = (
+                pd.read_csv(file_path)
+                if file_path.lower().endswith(".csv")
+                else pd.read_excel(file_path)
+            )
             enriched, bench = enrich_dataframe(df_in)
-
-            # Output file name
             out_path = os.path.splitext(file_path)[0] + "_enriched.xlsx"
 
-            # Save Calculations + Benchmark
+            # ------- narrow Calculations sheet -------
             calc_cols_key = ["Month", "PAN", "Supplier Name"]
             derived_cols = [
                 "Cash-Rich Status",
                 "Indicative Interest Rate (%)",
                 "Dependency %",
                 "Dependency Slab",
-            ] + [c for c in enriched.columns if "Deviation %" in c or "Performance" in c]
+            ] + [c for c in enriched.columns if "Deviation %" in c]
 
             calc_cols = [c for c in calc_cols_key + derived_cols if c in enriched.columns]
             df_calc = (
@@ -281,10 +253,52 @@ def _cli() -> None:
                 .sort_values(calc_cols_key)
             )
 
-            with pd.ExcelWriter(out_path, engine="openpyxl") as w:
-                df_calc.to_excel(w, sheet_name="Calculations", index=False)
-                bench.to_excel(w, sheet_name="Industry Benchmarks", index=False)
+            with pd.ExcelWriter(out_path, engine="openpyxl") as writer:
+                wb = writer.book
+                # remove the default blank sheet
+                if wb.sheetnames:
+                    del wb[wb.sheetnames[0]]
 
-            print(f"✅ Processed: {os.path.basename(file_path)} → {os.path.basename(out_path)}")
+                # ---- Industry Benchmarks ----
+                bench.to_excel(writer, sheet_name="Industry Benchmarks", index=False)
+
+                # ---- Calculations (with colouring) ----
+                ws = wb.create_sheet("Calculations")
+                for row in dataframe_to_rows(df_calc, index=False, header=True):
+                    ws.append(row)
+
+                # colour-map
+                fill = {
+                    "good": PatternFill(start_color="C6EFCE", end_color="16C47F", fill_type="solid"),
+                    "avg": PatternFill(start_color="FFEB9C", end_color="FFD65A", fill_type="solid"),
+                    "bad": PatternFill(start_color="F2DCDB", end_color="F93827", fill_type="solid"),
+                }
+
+                # locate deviation columns
+                for col_idx, cell in enumerate(ws[1], start=1):
+                    if "Deviation %" in str(cell.value):
+                        for row_idx in range(2, ws.max_row + 1):
+                            c = ws.cell(row=row_idx, column=col_idx)
+                            try:
+                                val = float(c.value)
+                            except (TypeError, ValueError):
+                                continue
+                            if val <= 20:
+                                c.fill = fill["good"]
+                            elif val <= 50:
+                                c.fill = fill["avg"]
+                            elif pd.isna(val) or val == "":
+                                continue
+                            else:
+                                c.fill = fill["bad"]
+
+            print(
+                f"✅ Processed: {os.path.basename(file_path)} → {os.path.basename(out_path)}"
+            )
         except Exception as e:
             print(f"❌ Failed to process {file_path}: {e}")
+
+
+# ────────────────────────── CLI Execution ──────────────────────────
+if __name__ == "__main__":
+    _cli()
